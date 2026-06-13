@@ -4,22 +4,29 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import json
+import base64
 
 # Configuración inicial de la página
-st.set_page_config(page_title="Fondo Común - Nativo", layout="wide")
+st.set_page_config(page_title="Fondo Común - Estable", layout="wide")
 
 st.title("💰 Control de Fondo Común")
-st.write("Sincronizado directamente con Google Sheets mediante Conexión Pura.")
+st.write("Sincronizado directamente con Google Sheets.")
 
 # URL de tu Google Sheets
 URL_HOJA = "AQUÍ_VA_TU_URL_COMPLETA_DE_GOOGLE_SHEETS"
 
-# --- CONEXIÓN DIRECTA CON GSPREAD ---
+# --- CONEXIÓN PURA DECÓDIFICANDO EN BASE64 ---
 try:
-    # Leer el JSON crudo guardado en los Secrets de Streamlit
-    info_credenciales = json.loads(st.secrets["gserviceaccount"]["json_creds"])
+    # 1. Leer el string codificado desde los Secrets
+    b64_texto = st.secrets["gserviceaccount"]["base64_creds"]
     
-    # Definir los alcances de lectura y escritura necesarios
+    # 2. Decodificar de Base64 a texto plano JSON bytes
+    json_bytes = base64.b64decode(b64_texto)
+    
+    # 3. Cargar el diccionario JSON de forma limpia
+    info_credenciales = json.loads(json_bytes)
+    
+    # Definir los alcances de la API de Google
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -95,7 +102,7 @@ with col_izq:
             if persona and monto_aporte > 0:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
-                # Inserción atómica pura sin Pandas intermedia
+                # Inserción limpia directo a las celdas
                 ws_aportes = sh.worksheet("Aportes")
                 ws_aportes.append_row([fecha_str, persona, float(monto_aporte)])
                 
