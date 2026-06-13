@@ -11,7 +11,7 @@ st.write("Registra aportes y gastos. Todo se almacena directamente en tu hoja de
 
 # URL pública o nombre de tu hoja de cálculo configurada en la conexión
 # Reemplaza esta URL por el enlace completo de tu Google Sheets de navegación
-URL_HOJA = "https://docs.google.com/spreadsheets/d/TU_ID_DE_HOJA_DE_CALCULO/edit"
+URL_HOJA = "https://docs.google.com/spreadsheets/d/1-DcC9ooqdSy5YZxPvhdpyYfhfuAvVXLdkgl9p1ZJkLg/edit"
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
 try:
@@ -23,24 +23,21 @@ except Exception as e:
 # --- FUNCIONES PARA LEER Y ESCRIBIR ---
 def cargar_datos():
     try:
-        # Intentamos leer la pestaña 'Aportes'
         df_a = conn.read(spreadsheet=URL_HOJA, worksheet="Aportes", ttl="0d")
-    except:
+        if df_a is None or df_a.empty:
+            df_a = pd.DataFrame(columns=["Fecha", "Persona", "Monto"])
+    except Exception:
         df_a = pd.DataFrame(columns=["Fecha", "Persona", "Monto"])
         
     try:
-        # Intentamos leer la pestaña 'Gastos'
         df_g = conn.read(spreadsheet=URL_HOJA, worksheet="Gastos", ttl="0d")
-    except:
-        df_g = pd.DataFrame(columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
-        
-    # Limpieza por si regresan vacíos o con columnas incorrectas
-    if df_a.empty or "Fecha" not in df_a.columns:
-        df_a = pd.DataFrame(columns=["Fecha", "Persona", "Monto"])
-    if df_g.empty or "Fecha" not in df_g.columns:
+        if df_g is None or df_g.empty:
+            df_g = pd.DataFrame(columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
+    except Exception:
         df_g = pd.DataFrame(columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
         
     return df_a, df_g
+
 
 df_aportes, df_gastos = cargar_datos()
 
