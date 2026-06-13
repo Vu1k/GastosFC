@@ -25,7 +25,7 @@ def cargar_datos():
     columnas_gastos = ["Fecha", "Descripción", "Monto", "Pagado Con"]
     
     try:
-        # Forzamos la lectura limpia
+        # TTL en 0 para que no use caché y lea datos frescos del iPhone de cualquiera
         df_a = conn.read(spreadsheet=URL_HOJA, worksheet="Aportes", ttl="0d")
         if df_a is None or df_a.empty or "Fecha" not in df_a.columns:
             df_a = pd.DataFrame(columns=columnas_aportes)
@@ -39,7 +39,7 @@ def cargar_datos():
     except Exception:
         df_g = pd.DataFrame(columns=columnas_gastos)
         
-    # Limpieza estricta de nombres de columnas y eliminación de filas completamente vacías
+    # Limpieza básica
     df_a.columns = df_a.columns.str.strip()
     df_g.columns = df_g.columns.str.strip()
     df_a = df_a.dropna(how="all")
@@ -49,17 +49,13 @@ def cargar_datos():
 
 df_aportes, df_gastos = cargar_datos()
 
-# Asegurar tipos de datos correctos
+# Asegurar tipos de datos numéricos para las métricas de la pantalla
 df_aportes["Monto"] = pd.to_numeric(df_aportes["Monto"], errors='coerce').fillna(0.0)
 df_gastos["Monto"] = pd.to_numeric(df_gastos["Monto"], errors='coerce').fillna(0.0)
 
-# Re-ordenar y asegurar que los DataFrames tengan la estructura exacta de columnas
-df_aportes = df_aportes[["Fecha", "Persona", "Monto"]].astype(str)
-df_gastos = df_gastos[["Fecha", "Descripción", "Monto", "Pagado Con"]].astype(str)
-
 # --- CÁLCULOS CENTRALES ---
-total_aportado = pd.to_numeric(df_aportes["Monto"]).sum()
-total_gastado = pd.to_numeric(df_gastos["Monto"]).sum()
+total_aportado = df_aportes["Monto"].sum()
+total_gastado = df_gastos["Monto"].sum()
 saldo_actual = total_aportado - total_gastado
 
 # --- PANEL DE CONTROL ---
@@ -88,12 +84,15 @@ with col_izq:
             if persona and monto_aporte > 0:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
-                # Crear nuevo registro
-                nuevo_aporte = pd.DataFrame([[fecha_str, persona, str(float(monto_aporte))]], columns=["Fecha", "Persona", "Monto"])
+                # Creamos el nuevo registro como una fila nueva para concatenar
+                nuevo_aporte = pd.DataFrame([[fecha_str, persona, float(monto_aporte)]], columns=["Fecha", "Persona", "Monto"])
                 df_actualizado = pd.concat([df_aportes, nuevo_aporte], ignore_index=True)
                 
-                # CRUCIAL: Añadimos 'clear=True' para que limpie la hoja antes de reescribir y evitar el error
-                conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_actualizado, clear=True)
+                # Forzar el orden correcto de columnas antes de enviar
+                df_actualizado = df_actualizado[["Fecha", "Persona", "Monto"]]
+                
+                # GUARDADO ESTÁNDAR COMPROBADO
+                conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_actualizado)
                 st.success(f"Aporte de {persona} guardado con éxito.")
                 st.rerun()
             else:
@@ -116,19 +115,24 @@ with col_der:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
                 if origen_pago == "Fondo Común":
-                    nuevo_gasto = pd.DataFrame([[fecha_str, descripcion, str(float(monto_gasto)), "Fondo Común"]], columns=["Fecha", "Descripción", "Monto", "Pagado Com"])
+                    nuevo_gasto = pd.DataFrame([[fecha_str, descripcion, float(monto_gasto), "Fondo Común"]], columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
                     df_gastos_act = pd.concat([df_gastos, nuevo_gasto], ignore_index=True)
-                    conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act, clear=True)
+                    df_gastos_act = df_gastos_act[["Fecha", "Descripción", "Monto", "Pagado Con"]]
+                    
+                    conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act)
                 else:
                     if quien_pago:
-                        nuevo_aporte = pd.DataFrame([[fecha_str, quien_pago, str(float(monto_gasto))]], columns=["Fecha", "Persona", "Monto"])
-                        nuevo_gasto = pd.DataFrame([[fecha_str, f"{descripcion} (Por {quien_pago})", str(float(monto_gasto)), quien_pago]], columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
+                        nuevo_aporte = pd.DataFrame([[fecha_str, quien_pago, float(monto_gasto)]], columns=["Fecha", "Persona", "Monto"])
+                        nuevo_gasto = pd.DataFrame([[fecha_str, f"{descripcion} (Por {quien_pago})", float(monto_gasto), quien_pago]], columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
                         
                         df_aportes_act = pd.concat([df_aportes, nuevo_aporte], ignore_index=True)
                         df_gastos_act = pd.concat([df_gastos, nuevo_gasto], ignore_index=True)
                         
-                        conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_aportes_act, clear=True)
-                        conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act, clear=True)
+                        df_aportes_act = df_aportes_act[["Fecha", "Persona", "Monto"]]
+                        df_gastos_act = df_gastos_act[["Fecha", "Descripción", "Monto", "Pagado Con"]]
+                        
+                        conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_aportes_act)
+                        conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act)
                     else:
                         st.error("Debes especificar quién pagó el gasto.")
                         st.stop()
@@ -152,10 +156,7 @@ with tab1:
 
 with tab2:
     if not df_aportes.empty and total_aportado > 0:
-        # Convertir temporalmente a numérico para agrupar en la vista
-        df_ver_aportes = df_aportes.copy()
-        df_ver_aportes["Monto"] = pd.to_numeric(df_ver_aportes["Monto"])
-        resumen_personas = df_ver_aportes.groupby("Persona")["Monto"].sum().reset_index()
+        resumen_personas = df_aportes.groupby("Persona")["Monto"].sum().reset_index()
         resumen_personas = resumen_personas.sort_values(by="Monto", ascending=False)
         st.dataframe(resumen_personas, use_container_width=True)
     else:
