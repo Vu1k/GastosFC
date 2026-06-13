@@ -7,47 +7,50 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Fondo Común - Google Sheets", layout="wide")
 
 st.title("💰 Control de Fondo Común")
-st.write("Sincronizado permanentemente con Google Sheets.")
+st.write("Sincronizado permanentemente con Google Sheets mediante API Nativa.")
 
-# Tu URL de Google Sheets
+# Coloca aquí tu URL completa de Google Sheets
 URL_HOJA = "AQUÍ_VA_TU_URL_COMPLETA_DE_GOOGLE_SHEETS"
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
+    # Extraemos el cliente nativo de Google (gspread) para saltarnos el bug del método .update()
+    client = conn.client
+    sh = client.open_by_url(URL_HOJA)
 except Exception as e:
-    st.error("Error al conectar con Google Sheets. Verifica los Secrets en Streamlit.")
+    st.error(f"Error al conectar con Google Sheets: {e}")
     st.stop()
 
-# --- FUNCIONES PARA LEER Y ESCRIBIR ---
-def cargar_datos():
+# --- FUNCIONES PARA LEER Y ESCRIBIR NATIVAMENTE ---
+def cargar_datos_nativos():
     columnas_aportes = ["Fecha", "Persona", "Monto"]
     columnas_gastos = ["Fecha", "Descripción", "Monto", "Pagado Con"]
     
     try:
-        # TTL en 0 para que no use caché y lea datos frescos del iPhone de cualquiera
-        df_a = conn.read(spreadsheet=URL_HOJA, worksheet="Aportes", ttl="0d")
-        if df_a is None or df_a.empty or "Fecha" not in df_a.columns:
-            df_a = pd.DataFrame(columns=columnas_aportes)
+        # Abrir pestañas de forma nativa
+        ws_aportes = sh.worksheet("Aportes")
+        datos_a = ws_aportes.get_all_records()
+        df_a = pd.DataFrame(datos_a) if datos_a else pd.DataFrame(columns=columnas_aportes)
     except Exception:
         df_a = pd.DataFrame(columns=columnas_aportes)
         
     try:
-        df_g = conn.read(spreadsheet=URL_HOJA, worksheet="Gastos", ttl="0d")
-        if df_g is None or df_g.empty or "Fecha" not in df_g.columns:
-            df_g = pd.DataFrame(columns=columnas_gastos)
+        ws_gastos = sh.worksheet("Gastos")
+        datos_g = ws_gastos.get_all_records()
+        df_g = pd.DataFrame(datos_g) if datos_g else pd.DataFrame(columns=columnas_gastos)
     except Exception:
         df_g = pd.DataFrame(columns=columnas_gastos)
-        
-    # Limpieza básica
-    df_a.columns = df_a.columns.str.strip()
-    df_g.columns = df_g.columns.str.strip()
-    df_a = df_a.dropna(how="all")
-    df_g = df_g.dropna(how="all")
     
+    # Asegurar nombres de columnas correctos por si la hoja estaba vacía
+    if df_a.empty or "Fecha" not in df_a.columns:
+        df_a = pd.DataFrame(columns=columnas_aportes)
+    if df_g.empty or "Fecha" not in df_g.columns:
+        df_g = pd.DataFrame(columns=columnas_gastos)
+        
     return df_a, df_g
 
-df_aportes, df_gastos = cargar_datos()
+df_aportes, df_gastos = cargar_datos_nativos()
 
 # Asegurar tipos de datos numéricos para las métricas de la pantalla
 df_aportes["Monto"] = pd.to_numeric(df_aportes["Monto"], errors='coerce').fillna(0.0)
@@ -84,15 +87,10 @@ with col_izq:
             if persona and monto_aporte > 0:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
-                # Creamos el nuevo registro como una fila nueva para concatenar
-                nuevo_aporte = pd.DataFrame([[fecha_str, persona, float(monto_aporte)]], columns=["Fecha", "Persona", "Monto"])
-                df_actualizado = pd.concat([df_aportes, nuevo_aporte], ignore_index=True)
+                # Escritura nativa: Añadimos una fila al final de la hoja directamente
+                ws_aportes = sh.worksheet("Aportes")
+                ws_aportes.append_row([fecha_str, persona, float(monto_aporte)])
                 
-                # Forzar el orden correcto de columnas antes de enviar
-                df_actualizado = df_actualizado[["Fecha", "Persona", "Monto"]]
-                
-                # GUARDADO ESTÁNDAR COMPROBADO
-                conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_actualizado)
                 st.success(f"Aporte de {persona} guardado con éxito.")
                 st.rerun()
             else:
@@ -113,26 +111,15 @@ with col_der:
         if submit_gasto:
             if descripcion and monto_gasto > 0:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                ws_gastos = sh.worksheet("Gastos")
                 
                 if origen_pago == "Fondo Común":
-                    nuevo_gasto = pd.DataFrame([[fecha_str, descripcion, float(monto_gasto), "Fondo Común"]], columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
-                    df_gastos_act = pd.concat([df_gastos, nuevo_gasto], ignore_index=True)
-                    df_gastos_act = df_gastos_act[["Fecha", "Descripción", "Monto", "Pagado Con"]]
-                    
-                    conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act)
+                    ws_gastos.append_row([fecha_str, descripcion, float(monto_gasto), "Fondo Común"])
                 else:
                     if quien_pago:
-                        nuevo_aporte = pd.DataFrame([[fecha_str, quien_pago, float(monto_gasto)]], columns=["Fecha", "Persona", "Monto"])
-                        nuevo_gasto = pd.DataFrame([[fecha_str, f"{descripcion} (Por {quien_pago})", float(monto_gasto), quien_pago]], columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
-                        
-                        df_aportes_act = pd.concat([df_aportes, nuevo_aporte], ignore_index=True)
-                        df_gastos_act = pd.concat([df_gastos, nuevo_gasto], ignore_index=True)
-                        
-                        df_aportes_act = df_aportes_act[["Fecha", "Persona", "Monto"]]
-                        df_gastos_act = df_gastos_act[["Fecha", "Descripción", "Monto", "Pagado Con"]]
-                        
-                        conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_aportes_act)
-                        conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act)
+                        ws_aportes = sh.worksheet("Aportes")
+                        ws_aportes.append_row([fecha_str, quien_pago, float(monto_gasto)])
+                        ws_gastos.append_row([fecha_str, f"{descripcion} (Por {quien_pago})", float(monto_gasto), quien_pago])
                     else:
                         st.error("Debes especificar quién pagó el gasto.")
                         st.stop()
@@ -149,13 +136,13 @@ st.subheader("📋 Resumen de Movimientos")
 tab1, tab2, tab3 = st.tabs(["Historial de Gastos", "Detalle de Aportes por Persona", "Ver Todo"])
 
 with tab1:
-    if not df_gastos.empty and total_gastado > 0:
+    if not df_gastos.empty:
         st.dataframe(df_gastos, use_container_width=True)
     else:
         st.info("No hay gastos registrados todavía.")
 
 with tab2:
-    if not df_aportes.empty and total_aportado > 0:
+    if not df_aportes.empty:
         resumen_personas = df_aportes.groupby("Persona")["Monto"].sum().reset_index()
         resumen_personas = resumen_personas.sort_values(by="Monto", ascending=False)
         st.dataframe(resumen_personas, use_container_width=True)
