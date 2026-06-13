@@ -1,34 +1,43 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from streamlit_gsheets import GSheetsConnection
+import gspread
+from google.oauth2.service_account import Credentials
+import json
 
 # Configuración inicial de la página
-st.set_page_config(page_title="Fondo Común - Google Sheets", layout="wide")
+st.set_page_config(page_title="Fondo Común - Nativo", layout="wide")
 
 st.title("💰 Control de Fondo Común")
-st.write("Sincronizado permanentemente con Google Sheets mediante API Nativa.")
+st.write("Sincronizado directamente con Google Sheets mediante Conexión Pura.")
 
-# Coloca aquí tu URL completa de Google Sheets
+# URL de tu Google Sheets
 URL_HOJA = "AQUÍ_VA_TU_URL_COMPLETA_DE_GOOGLE_SHEETS"
 
-# --- CONEXIÓN A GOOGLE SHEETS ---
+# --- CONEXIÓN DIRECTA CON GSPREAD ---
 try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    # Extraemos el cliente nativo de Google (gspread) para saltarnos el bug del método .update()
-    client = conn.client
+    # Leer el JSON crudo guardado en los Secrets de Streamlit
+    info_credenciales = json.loads(st.secrets["gserviceaccount"]["json_creds"])
+    
+    # Definir los alcances de lectura y escritura necesarios
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    
+    credenciales = Credentials.from_service_account_info(info_credenciales, scopes=scopes)
+    client = gspread.authorize(credenciales)
     sh = client.open_by_url(URL_HOJA)
 except Exception as e:
-    st.error(f"Error al conectar con Google Sheets: {e}")
+    st.error(f"Error crítico de autenticación con Google: {e}")
     st.stop()
 
-# --- FUNCIONES PARA LEER Y ESCRIBIR NATIVAMENTE ---
+# --- LECTURA DE DATOS ---
 def cargar_datos_nativos():
     columnas_aportes = ["Fecha", "Persona", "Monto"]
     columnas_gastos = ["Fecha", "Descripción", "Monto", "Pagado Con"]
     
     try:
-        # Abrir pestañas de forma nativa
         ws_aportes = sh.worksheet("Aportes")
         datos_a = ws_aportes.get_all_records()
         df_a = pd.DataFrame(datos_a) if datos_a else pd.DataFrame(columns=columnas_aportes)
@@ -42,7 +51,6 @@ def cargar_datos_nativos():
     except Exception:
         df_g = pd.DataFrame(columns=columnas_gastos)
     
-    # Asegurar nombres de columnas correctos por si la hoja estaba vacía
     if df_a.empty or "Fecha" not in df_a.columns:
         df_a = pd.DataFrame(columns=columnas_aportes)
     if df_g.empty or "Fecha" not in df_g.columns:
@@ -52,7 +60,7 @@ def cargar_datos_nativos():
 
 df_aportes, df_gastos = cargar_datos_nativos()
 
-# Asegurar tipos de datos numéricos para las métricas de la pantalla
+# Normalizar tipos numéricos
 df_aportes["Monto"] = pd.to_numeric(df_aportes["Monto"], errors='coerce').fillna(0.0)
 df_gastos["Monto"] = pd.to_numeric(df_gastos["Monto"], errors='coerce').fillna(0.0)
 
@@ -87,7 +95,7 @@ with col_izq:
             if persona and monto_aporte > 0:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
-                # Escritura nativa: Añadimos una fila al final de la hoja directamente
+                # Inserción atómica pura sin Pandas intermedia
                 ws_aportes = sh.worksheet("Aportes")
                 ws_aportes.append_row([fecha_str, persona, float(monto_aporte)])
                 
