@@ -3,8 +3,6 @@ import pandas as pd
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
-import json
-import base64
 
 # Configuración inicial de la página
 st.set_page_config(page_title="Fondo Común - Estable", layout="wide")
@@ -15,18 +13,23 @@ st.write("Sincronizado directamente con Google Sheets.")
 # URL de tu Google Sheets
 URL_HOJA = "AQUÍ_VA_TU_URL_COMPLETA_DE_GOOGLE_SHEETS"
 
-# --- CONEXIÓN PURA DECÓDIFICANDO EN BASE64 ---
+# --- CONEXIÓN RECONSTRUYENDO EL DICCIONARIO DESDE TOML ---
 try:
-    # 1. Leer el string codificado desde los Secrets
-    b64_texto = st.secrets["gserviceaccount"]["base64_creds"]
+    # Recolectamos las variables limpias desde el TOML de Streamlit
+    info_credenciales = {
+        "type": st.secrets["gserviceaccount"]["type"],
+        "project_id": st.secrets["gserviceaccount"]["project_id"],
+        "private_key_id": st.secrets["gserviceaccount"]["private_key_id"],
+        "private_key": st.secrets["gserviceaccount"]["private_key"].replace("\\n", "\n"),
+        "client_email": st.secrets["gserviceaccount"]["client_email"],
+        "client_id": st.secrets["gserviceaccount"]["client_id"],
+        "auth_uri": st.secrets["gserviceaccount"]["auth_uri"],
+        "token_uri": st.secrets["gserviceaccount"]["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["gserviceaccount"]["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["gserviceaccount"]["client_x509_cert_url"],
+        "universe_domain": st.secrets["gserviceaccount"]["universe_domain"]
+    }
     
-    # 2. Decodificar de Base64 a texto plano JSON bytes
-    json_bytes = base64.b64decode(b64_texto)
-    
-    # 3. Cargar el diccionario JSON de forma limpia
-    info_credenciales = json.loads(json_bytes)
-    
-    # Definir los alcances de la API de Google
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -102,7 +105,6 @@ with col_izq:
             if persona and monto_aporte > 0:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
-                # Inserción limpia directo a las celdas
                 ws_aportes = sh.worksheet("Aportes")
                 ws_aportes.append_row([fecha_str, persona, float(monto_aporte)])
                 
