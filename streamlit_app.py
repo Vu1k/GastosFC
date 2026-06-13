@@ -1,25 +1,56 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 
 # Configuración inicial de la página
-st.set_page_config(page_title="Control de Fondo Común", layout="wide")
+st.set_page_config(page_title="Fondo Común - Google Sheets", layout="wide")
 
-st.title("💰 Control de Fondo Común y Gastos Compartidos")
-st.write("Gestiona la bolsa de dinero de tu grupo, registra aportes y controla los gastos.")
+st.title("💰 Control de Fondo Común (Conectado a Google Sheets)")
+st.write("Registra aportes y gastos. Todo se almacena directamente en tu hoja de cálculo.")
 
-# Inicializar el estado de la aplicación si no existe
-if "aportes" not in st.session_state:
-    st.session_state.aportes = []
-if "gastos" not in st.session_state:
-    st.session_state.gastos = []
+# URL pública o nombre de tu hoja de cálculo configurada en la conexión
+# Reemplaza esta URL por el enlace completo de tu Google Sheets de navegación
+URL_HOJA = "https://docs.google.com/spreadsheets/d/TU_ID_DE_HOJA_DE_CALCULO/edit"
+
+# --- CONEXIÓN A GOOGLE SHEETS ---
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception as e:
+    st.error("Error al conectar con Google Sheets. Verifica los Secrets en Streamlit.")
+    st.stop()
+
+# --- FUNCIONES PARA LEER Y ESCRIBIR ---
+def cargar_datos():
+    try:
+        # Intentamos leer la pestaña 'Aportes'
+        df_a = conn.read(spreadsheet=URL_HOJA, worksheet="Aportes", ttl="0d")
+    except:
+        df_a = pd.DataFrame(columns=["Fecha", "Persona", "Monto"])
+        
+    try:
+        # Intentamos leer la pestaña 'Gastos'
+        df_g = conn.read(spreadsheet=URL_HOJA, worksheet="Gastos", ttl="0d")
+    except:
+        df_g = pd.DataFrame(columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
+        
+    # Limpieza por si regresan vacíos o con columnas incorrectas
+    if df_a.empty or "Fecha" not in df_a.columns:
+        df_a = pd.DataFrame(columns=["Fecha", "Persona", "Monto"])
+    if df_g.empty or "Fecha" not in df_g.columns:
+        df_g = pd.DataFrame(columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
+        
+    return df_a, df_g
+
+df_aportes, df_gastos = cargar_datos()
+
+# Asegurar tipos numéricos para los cálculos
+df_aportes["Monto"] = pd.to_numeric(df_aportes["Monto"], errors='coerce').fillna(0.0)
+df_gastos["Monto"] = pd.to_numeric(df_gastos["Monto"], errors='coerce').fillna(0.0)
 
 # --- CÁLCULOS CENTRALES ---
-df_aportes = pd.DataFrame(st.session_state.aportes, columns=["Fecha", "Persona", "Monto"])
-df_gastos = pd.DataFrame(st.session_state.gastos, columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
-
-total_aportado = df_aportes["Monto"].sum() if not df_aportes.empty else 0.0
-total_gastado = df_gastos["Monto"].sum() if not df_gastos.empty else 0.0
+total_aportado = df_aportes["Monto"].sum()
+total_gastado = df_gastos["Monto"].sum()
 saldo_actual = total_aportado - total_gastado
 
 # --- PANEL DE CONTROL (MÉTRICAS) ---
@@ -29,7 +60,6 @@ with col1:
 with col2:
     st.metric(label="Total Gastado", value=f"${total_gastado:,.2f}")
 with col3:
-    # Cambia a color de alerta si el saldo es negativo
     st.metric(label="Saldo Disponible", value=f"${saldo_actual:,.2f}", 
               delta=f"${saldo_actual:,.2f}", delta_color="normal" if saldo_actual >= 0 else "inverse")
 
@@ -42,14 +72,19 @@ with col_izq:
     st.subheader("➕ Registrar Aporte")
     with st.form("form_aporte", clear_on_submit=True):
         persona = st.text_input("Nombre de la persona").strip()
-        monto_aporte = st.number_input("Monto aportado", min_value=0.0, step=5000.0)
+        monto_aporte = st.number_input("Monto aportado", min_value=0.0, step=1000.0)
         submit_aporte = st.form_submit_button("Guardar Aporte")
         
         if submit_aporte:
             if persona and monto_aporte > 0:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                st.session_state.aportes.append([fecha_str, persona, monto_aporte])
-                st.success(f"Aporte de {persona} registrado con éxito.")
+                nuevo_aporte = pd.DataFrame([[fecha_str, persona, monto_aporte]], columns=["Fecha", "Persona", "Monto"])
+                
+                # Concatenar y guardar
+                df_actualizado = pd.concat([df_aportes, nuevo_aporte], ignore_index=True)
+                conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_actualizado)
+                
+                st.success(f"Aporte de {persona} guardado en Google Sheets.")
                 st.rerun()
             else:
                 st.error("Por favor, ingresa un nombre válido y un monto mayor a cero.")
@@ -58,9 +93,8 @@ with col_der:
     st.subheader("💸 Registrar Gasto")
     with st.form("form_gasto", clear_on_submit=True):
         descripcion = st.text_input("Concepto o descripción del gasto").strip()
-        monto_gasto = st.number_input("Monto del gasto", min_value=0.0, step=5000.0)
+        monto_gasto = st.number_input("Monto del gasto", min_value=0.0, step=1000.0)
         
-        # Opciones para definir de dónde sale el dinero
         origen_pago = st.selectbox("¿Cómo se pagó?", ["Fondo Común", "Reembolsar a alguien (Aportado individualmente)"])
         quien_pago = ""
         if origen_pago == "Reembolsar a alguien (Aportado individualmente)":
@@ -73,18 +107,24 @@ with col_der:
                 fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 
                 if origen_pago == "Fondo Común":
-                    # El gasto se resta directamente de la bolsa común
-                    st.session_state.gastos.append([fecha_str, descripcion, monto_gasto, "Fondo Común"])
-                    st.success(f"Gasto '{descripcion}' registrado contra el Fondo Común.")
+                    nuevo_gasto = pd.DataFrame([[fecha_str, descripcion, monto_gasto, "Fondo Común"]], columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
+                    df_gastos_act = pd.concat([df_gastos, nuevo_gasto], ignore_index=True)
+                    conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act)
                 else:
                     if quien_pago:
-                        # Si alguien lo pagó de su bolsillo, equivale a que hizo un aporte y luego se generó el gasto
-                        st.session_state.aportes.append([fecha_str, quien_pago, monto_gasto])
-                        st.session_state.gastos.append([fecha_str, f"{descripcion} (Por {quien_pago})", monto_gasto, quien_pago])
-                        st.success(f"Gasto registrado. Se añadió un aporte automático a favor de {quien_pago}.")
+                        nuevo_aporte = pd.DataFrame([[fecha_str, quien_pago, monto_gasto]], columns=["Fecha", "Persona", "Monto"])
+                        nuevo_gasto = pd.DataFrame([[fecha_str, f"{descripcion} (Por {quien_pago})", monto_gasto, quien_pago]], columns=["Fecha", "Descripción", "Monto", "Pagado Con"])
+                        
+                        df_aportes_act = pd.concat([df_aportes, nuevo_aporte], ignore_index=True)
+                        df_gastos_act = pd.concat([df_gastos, nuevo_gasto], ignore_index=True)
+                        
+                        conn.update(spreadsheet=URL_HOJA, worksheet="Aportes", data=df_aportes_act)
+                        conn.update(spreadsheet=URL_HOJA, worksheet="Gastos", data=df_gastos_act)
                     else:
-                        st.error("Debes especificar quién pagó el gasto para poder reembolsarle.")
+                        st.error("Debes especificar quién pagó el gasto.")
                         st.stop()
+                
+                st.success("Gasto guardado en Google Sheets con éxito.")
                 st.rerun()
             else:
                 st.error("Por favor, ingresa una descripción y un monto mayor a cero.")
@@ -103,7 +143,6 @@ with tab1:
 
 with tab2:
     if not df_aportes.empty:
-        # Agrupar para ver cuánto ha puesto cada persona en total
         resumen_personas = df_aportes.groupby("Persona")["Monto"].sum().reset_index()
         resumen_personas = resumen_personas.sort_values(by="Monto", ascending=False)
         st.dataframe(resumen_personas, use_container_width=True)
